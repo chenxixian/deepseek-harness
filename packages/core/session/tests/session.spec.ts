@@ -663,8 +663,31 @@ describe('Session', () => {
 
   it('accepts dense arrays and nested plain objects', () => {
     const session = Session.create(SessionId('s6'))
-    expect(() => session.append('user/message', { content: [{ type: 'text', text: 'x' }], source: { kind: 'user' }, extra: [1, 2, [3, { a: null, b: true }]] } as never, { surfaceOp: 'append' })).not.toThrow()
+    // 用 createUserMessage 构造带 id 的合法消息，只测「dense array / nested plain object
+    // 应通过 JSON 序列化」。注意：不能再用缺 id 的对象（`as never`）——那种对象不是合法
+    // UserMessage，会被 append 的 assertMessageEventShape 拒绝（见下一用例），
+    // 而与「序列化能接受什么」无关。
+    expect(() => session.append('user/message', createUserMessage({
+      content: [{ type: 'text', text: 'x' }],
+      source: { kind: 'user' },
+      extra: [1, 2, [3, { a: null, b: true }]],
+    } as never), { surfaceOp: 'append' })).not.toThrow()
     expect(session.snapshotEvents()).toHaveLength(1)
+  })
+
+  it('rejects a message-eligible append whose user/message lacks an identified id (fail at append site)', () => {
+    // 2026-10-20 真实事故的外部仿真：插件经 additionalContexts 注入缺 id 的 UserMessage。
+    // 写入路径（append）此前只做 validateSessionEventData（不校验 message shape），
+    // 缺 id 会静默落盘，直到整条会话日志加载时 fail-closed。本用例锁定「即写即验」：
+    // append 应与 adoptSessionEvent（加载路径）一致，对缺 id 的 user/message 直接拒绝。
+    const session = Session.create(SessionId('fail-at-append'))
+    expect(() => session.append('user/message', {
+      content: [{ type: 'text', text: 'no-id' }],
+      source: { kind: 'user' },
+    } as never, { surfaceOp: 'append' }))
+      .toThrow(/lacks an identified message/)
+    // 被拒绝的 append 从未进入日志。
+    expect(session.snapshotEvents()).toHaveLength(0)
   })
 
   it('validates seed events: rejects a non-JSON-serializable seed', () => {
@@ -1818,3 +1841,4 @@ describe('SessionStore', () => {
     expect(heard).toEqual([session])
   })
 })
+

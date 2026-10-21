@@ -875,6 +875,12 @@ export class Session {
    */
   private commit(event: SessionEvent, entry: SessionEntry | undefined): void {
     this.surfaceManager.validateNext(event)
+    // 即写即验（fail at append site）：把携带消息的 surface 事件校验前移到写入路径，
+    // 与 adoptSessionEvent（加载路径）保持一致。否则缺 id 的 user/message 会静默落盘，
+    // 直到整条会话日志加载时 fail-closed（2026-10-20 真实事故：外部插件经 additionalContexts
+    // 注入缺 id 的 UserMessage，写坏两份会话日志）。放在 validateNext 之后，先让
+    // surface metadata（如 invalid surfaceOp）校验报错，再校验 message shape。
+    assertMessageEventShape(event, `session event "${event.type}" at seq ${event.seq}`)
 
     if (entry !== undefined) entry.appending = true
     try {
@@ -1451,3 +1457,4 @@ export class SessionStore extends Service {
 
 export { decodeSeqRanges, encodeSeqRanges } from './seq-ranges.ts'
 export default SessionStore
+

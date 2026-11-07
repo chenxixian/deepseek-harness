@@ -423,6 +423,48 @@ describe('Session', () => {
     }
   })
 
+  it('rejects message-eligible events lacking an id at append site', () => {
+    const session = Session.create(SessionId('s-append-fail'))
+    // 缺 id 的 user/message：旧行为是 validateSessionEventData 不查 message shape，会静默落盘
+    // 补齐 assertMessageEventShape 后，应在 append 时（fail at append site）立即拒绝。
+    // 注意必须用裸对象——createUserMessage 会自动补 id，无法构造缺 id 用例。
+    expect(() =>
+      session.append(
+        'user/message',
+        {
+          role: 'user',
+          content: [{ type: 'text', text: 'no-id' }],
+          source: { kind: 'user' },
+        } as never,
+        { surfaceOp: 'append' },
+      ),
+    ).toThrow(/lacks an identified message/)
+
+    // 极端情形：data 里 id 与 source 都缺失（user/message 的 message 即 data 本身）。
+    // id 检查优先于 source 检查（行 340-355），应仍抛缺 id 的错。
+    expect(() =>
+      session.append(
+        'user/message',
+        {
+          role: 'user',
+          content: [{ type: 'text', text: 'no-id-no-source' }],
+        } as never,
+        { surfaceOp: 'append' },
+      ),
+    ).toThrow(/lacks an identified message/)
+
+    // 合法消息仍应正常 append（不误伤）。
+    session.append('turn/start', { turn: 1 })
+    session.append(
+      'user/message',
+      createUserMessage({
+        content: [{ type: 'text', text: 'ok' }],
+        source: { kind: 'user' },
+      }),
+      { surfaceOp: 'append' },
+    )
+  })
+
   it('snapshots message events without validating plugin-owned block details', () => {
     const boundary = snapshotSessionEvent({
       type: 'turn/start',
@@ -663,7 +705,8 @@ describe('Session', () => {
 
   it('accepts dense arrays and nested plain objects', () => {
     const session = Session.create(SessionId('s6'))
-    expect(() => session.append('user/message', { content: [{ type: 'text', text: 'x' }], source: { kind: 'user' }, extra: [1, 2, [3, { a: null, b: true }]] } as never, { surfaceOp: 'append' })).not.toThrow()
+    // append 现在在写入路径校验 message shape（fail at append site），故 user/message 须带 id。
+    expect(() => session.append('user/message', { id: 'm1', role: 'user', content: [{ type: 'text', text: 'x' }], source: { kind: 'user' }, extra: [1, 2, [3, { a: null, b: true }]] } as never, { surfaceOp: 'append' })).not.toThrow()
     expect(session.snapshotEvents()).toHaveLength(1)
   })
 

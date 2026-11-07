@@ -875,6 +875,11 @@ export class Session {
    */
   private commit(event: SessionEvent, entry: SessionEntry | undefined): void {
     this.surfaceManager.validateNext(event)
+    // fail at append site：把携带消息的 surface 事件的 shape 校验前移到写入路径，
+    // 与 adoptSessionEvent（加载路径）保持一致。否则缺 id 的 user/message 会静默落盘，
+    // 直到整条会话日志加载时 fail-closed（2026-10-20 真实事故：外部插件经 additionalContexts
+    // 注入缺 id 的 UserMessage，写坏两份会话日志）。
+    assertMessageEventShape(event, `session event at seq ${event.seq}`)
 
     if (entry !== undefined) entry.appending = true
     try {

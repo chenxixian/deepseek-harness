@@ -17,6 +17,7 @@ import type {} from '@deepseek-ai/dsh-subprocess'
 import type {} from '@deepseek-ai/dsh-tools'
 import type { FsTarget } from '@deepseek-ai/dsh-fs'
 import { GitRunner } from './git.ts'
+import { reapStaleScratch } from './reaper.ts'
 import { TurnRecorder } from './recorder.ts'
 import type { WorkspaceChanges } from './types.ts'
 
@@ -45,6 +46,11 @@ export interface Config {
   maxFileBytes: number
   /** Milliseconds a line comparison may run before it degrades to whole-file replacement. */
   diffTimeoutMs: number
+  /**
+   * Grace period before a scratch directory in the temporary root that names no owning process is
+   * reclaimed at load. A directory whose owner has exited is reclaimed whatever its age.
+   */
+  orphanTtlMs: number
 }
 
 /** Schemastery validation for {@link Config}. */
@@ -54,6 +60,7 @@ export const Config: z<Config> = z.object({
   maxFiles: z.number().default(500),
   maxFileBytes: z.number().default(2 * 1024 * 1024),
   diffTimeoutMs: z.number().default(100),
+  orphanTtlMs: z.number().default(7 * 24 * 60 * 60 * 1000),
 })
 
 function eligible(session: Session): string | undefined {
@@ -95,10 +102,16 @@ async function resolveGit(ctx: Context, signal: AbortSignal): Promise<string | n
 export function apply(ctx: Context, config: Config): void {
   for (const [field, value] of [
     ['timeoutMs', config.timeoutMs], ['outputMaxBytes', config.outputMaxBytes], ['maxFiles', config.maxFiles],
-    ['maxFileBytes', config.maxFileBytes], ['diffTimeoutMs', config.diffTimeoutMs],
+    ['maxFileBytes', config.maxFileBytes], ['diffTimeoutMs', config.diffTimeoutMs], ['orphanTtlMs', config.orphanTtlMs],
   ] as const) {
     if (!Number.isSafeInteger(value) || value < 1) throw new Error(`workspace-changes requires a positive integer ${field}`)
   }
+  const warn = (message: string): void => { ctx.logger.warn(message) }
+  // A Host that exited without disposing its Sessions left its scratch directories behind forever, so
+  // each load reclaims the ones whose owning process is gone and any unclaimed one past its grace period.
+  void reapStaleScratch({ tempRoot: tmpdir(), orphanTtlMs: config.orphanTtlMs, warn }).then((outcome) => {
+    if (outcome.removed > 0) ctx.logger.info(`workspace-changes: reclaimed ${outcome.removed} abandoned scratch director${outcome.removed === 1 ? 'y' : 'ies'} of ${outcome.scanned} found`)
+  })
   const lifetime = new AbortController()
   const recorders = new Map<Session, TurnRecorder>()
   const mutations = new WeakMap<object, TurnRecorder>()
@@ -135,7 +148,7 @@ export function apply(ctx: Context, config: Config): void {
       recorder = new TurnRecorder(session, cwd, {
         git: gitRunner(), tempRoot: tmpdir(), maxFiles: config.maxFiles,
         maxFileBytes: config.maxFileBytes, diffTimeoutMs: config.diffTimeoutMs,
-        warn: (message) => { ctx.logger.warn(message) },
+        warn,
       })
       recorders.set(session, recorder)
       byId.set(session.id, recorder)

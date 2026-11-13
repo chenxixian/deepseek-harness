@@ -1,5 +1,5 @@
 /** Per-Session turn recorder: snapshots, captures around file-tool edits, the turn-end diff, and the records kept until disposal. */
-import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, relative, resolve } from 'node:path'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
@@ -9,6 +9,7 @@ import {
   blobText, diffTrees, gitlinkPaths, ignoredPaths, locateGitWorkspace, snapshotTree, treeBlob, type GitRunner, type GitWorkspace,
 } from './git.ts'
 import { canonicalPath, compareDisplay, displayPathOf, durablePathOf, isInside, isTemporaryPath, temporaryRoots, toPosix } from './paths.ts'
+import { leaseContent, leaseName, scratchPrefix } from './reaper.ts'
 import type { WorkspaceChangedFile, WorkspaceChangesSummary, WorkspaceFileDiff } from './types.ts'
 
 /** Facts shared by every recorder of one plugin instance. */
@@ -265,9 +266,15 @@ export class TurnRecorder {
     if (!this.lifetime.signal.aborted) this.env.warn(`workspace-changes: ${String(error)}`)
   }
 
-  /** This Session's temporary directory, created on first use. */
+  /**
+   * This Session's temporary directory, created on first use with a lease naming this process so a
+   * later Host can tell an abandoned directory from one another Session is still writing.
+   */
   private scratchDir(): Promise<string> {
-    this.scratch ??= mkdtemp(join(this.env.tempRoot, 'dsh-workspace-changes-'))
+    this.scratch ??= mkdtemp(join(this.env.tempRoot, scratchPrefix)).then(async (dir) => {
+      await writeFile(join(dir, leaseName), leaseContent(Date.now()))
+      return dir
+    })
     return this.scratch
   }
 
